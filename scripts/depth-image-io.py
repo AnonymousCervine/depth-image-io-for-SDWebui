@@ -62,7 +62,7 @@ class Script(scripts.Script):
         return [input_depth_img, show_depth]
 
     def run(self, p, input_depth_img, show_depth):
-        is_img2img = p is processing.StableDiffusionProcessingImg2Img
+        is_img2img = isinstance(p, processing.StableDiffusionProcessingImg2Img)
         use_custom_depth_input = bool(input_depth_img)
         if not is_img2img and not use_custom_depth_input:
             raise RuntimeError("If using the Custom Depth Images I/O script with txt2img, you MUST PROVIDE A DEPTH IMAGE (because there's no other image to infer depth from!)")
