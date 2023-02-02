@@ -22,3 +22,10 @@ Accordingly, one will find that attempting to give realistic linear depth values
 Additionaly, for the model this is designed for, the depth is downsampled to 1/8th the target dimensions (so 64x64 for 512x512) and normalized to a [-1.0, 1.0] range, and the model does not seem particularly sensitive to very fine differences in the depth values; the lack of precision from having only 255 possible depth values doesn't seem to have much any effect in a handful of casual tests (I had tried to support floating-point depth values in an OpenEXR format at first; it doesn't seem worth it).
 
 (A strange upshot of all this is that it seems that whether a depth image "looks" correct at a glance can seemingly matter much more than whether it "is" physically correct! I've even thrown the linearity of the depth out the window in some few of my tests (e.g. used logarithmic depth) and it never seemed to hurt much so long as it looked "sort of like what MiDaS outputs" to my eyeballs.)
+
+# Tutorial For How To Generate Epic Text By Using Depth Image I/O Extension
+[How To Generate Stunning Epic Text By Stable Diffusion AI - No Photoshop - For Free - Depth-To-Image](https://www.youtube.com/watch?v=TBq1bhY8BOc)
+[![image](https://user-images.githubusercontent.com/19240467/216416220-4de7bdd9-ed2f-4bae-ae6b-1f3d48b034a0.png)](https://www.youtube.com/watch?v=TBq1bhY8BOc)
+
+
+
