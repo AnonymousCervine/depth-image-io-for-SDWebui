@@ -13,7 +13,10 @@
 # Notwithstanding that, for all such portions of the code as I do own, I freely permit the use of them as-is, with no representations made as to their performance nor dangers.
 # ...That much should, I think, be enough for anyone who is willing, in the first place, to use the nebulously-copyrighted codebase that this code is designed to operate with.
 
+import os
+import traceback
 from types import MethodType
+
 import gradio as gr
 import numpy as np
 from PIL import Image
@@ -49,6 +52,43 @@ This is a script for the combined purposes of: **A)** Inserting custom depth ima
 *Finally, be aware that this code is slightly fragile and may break in a future update! Have fun, and good luck!*
 """
 
+batching_notes = """\
+**Batching Usage Notes (Experimental!):**
+ - Batch inputs will (hopefully) override whatever fields they replace, fully and equivalently.
+   - ***EXCEPT (IMPORTANT):*** For reasons, when using color batch input, the img2img tab needs a dummy image in the regular spot, to function (otherwise it will fail before it hands things off to this extension). 
+   - Color image inputs will also not work on the txt2img tab, as one might expect.
+ - If both color and depth batches are provided, batching will make pairs of color and depth images under the assumption that they are matched pairs provided in alphabetical order (by filename), unless `Batch each depth image against every single color image` is checked.
+   - (But see important notes below on caveats to "alphabetical" ordering)
+ - There are some complicating limitations imposed by how Gradio transfers files:
+   - You have to drop (or select) all the files in the batch in one go; Gradio's file-upload interface is not sophisticated. 
+   - Images will be processed in alphabetical order... **approximately**. (Important if you want your depth and color images to line up correctly)
+      - NOT alphanumeric. So `img10_depth.png` will come before `img2_depth.png`
+      - Gradio appears to mess with the file names before handing them off via temporary-file creation mechanisms, placing a random hex number before the first dot **on Windows** (I'm not sure of other operating-system's implementations, please report any unexpected behaviour!)
+        - So `img01.png` internally becomes something like `img01a6doxg5s.png`
+        - This means that if you provide images where *length* of the name is counted on for sorting—for instance `a.png` and `ab.png`—they may be processed in a random order!
+        - If in doubt and having trouble: Keep file-names identical length, and keep all distinguishing information before the first period in the filename. (For example `img0001_color.png, image0002_color.png...) 
+   - Temporary copies will be made of the input files (because Gradio doesn't know if they're coming from a local or a remote machine). This normally won't matter much at all, but do note that:
+     - While I try my best to clean them up, if the program crashes or throws an error at an inopportune time some copies may be left in whatever location your OS provisions for temporary files (e.g. `%TEMP%` on Windows)
+     - for *excessively* large batches, note the disk-space usage this implies (since a full temporary copy of all the input files will be made)
+"""
+
+# Used to remove any temp files that were downloaded for batches, lest we clutter the computer.
+def cleanup_temp_files(tempfile_list):
+    if tempfile_list:
+        for tmp_file in tempfile_list:
+            filename = tmp_file.name
+            tmp_file.close()
+            os.remove(filename)
+            
+def concat_processed_outputs(p1, p2):
+    if not p1:
+        return p2
+    if not p2:
+        return p1
+    p1.images += p2.images
+    return p1
+
+
 class Script(scripts.Script):
     def title(self):
         return "Custom Depth Images (input/output)"
@@ -59,9 +99,14 @@ class Script(scripts.Script):
             gr.Markdown(instructions)
         gr.Markdown("---\n\nPut depth image here ⤵")
         input_depth_img = gr.Image(source='upload', type="pil")
-        return [input_depth_img, show_depth]
-
-    def run(self, p, input_depth_img, show_depth):
+        with gr.Accordion("Batch Processing (Experimental)", open=False):
+            batch_many_to_many = gr.Checkbox(False, label="Batch each depth image against every single color image. (Warning: Use cautiously with large batches!)")
+            batch_img_input = gr.File(file_types=['image'], file_count='multiple', label="Input Color Images")
+            batch_depth_input = gr.File(file_types=['image'], file_count='multiple', label="Input Depth Images")
+            gr.Markdown(batching_notes)
+        return [input_depth_img, show_depth, batch_img_input, batch_depth_input, batch_many_to_many]
+        
+    def run_inner(self, p, input_depth_img, show_depth):
         is_img2img = isinstance(p, processing.StableDiffusionProcessingImg2Img)
         use_custom_depth_input = bool(input_depth_img)
         if not is_img2img and not use_custom_depth_input:
@@ -117,4 +162,58 @@ class Script(scripts.Script):
         processed_output = processing.process_images(p)
         if show_depth and p.out_depth_image:
             processed_output.images.append(p.out_depth_image)
+        return processed_output
+
+    def run(self, p, input_depth_img, show_depth, batch_img_input, batch_depth_input, batch_many_to_many):
+        if not (batch_img_input or batch_depth_input):
+            return self.run_inner(p, input_depth_img, show_depth)
+            
+        try:
+            if batch_img_input and batch_depth_input and not batch_many_to_many:
+                depth_batch_size = len(batch_depth_input)
+                color_batch_size = len(batch_img_input)
+                larger_batch_size = max(color_batch_size, depth_batch_size)
+                shorter_batch_size = min(color_batch_size, depth_batch_size)
+                if larger_batch_size != shorter_batch_size:
+                    raise RuntimeError(f"Depth Image Batch-size ({depth_batch_size}) and Color Image Batch-size ({color_batch_size}) are not the same length. Unclear how to proceed.")
+            
+            
+            batch_color = []
+            batch_depth = []
+            
+            if batch_img_input:
+                batch_img_input.sort(key = lambda file : file.name)
+                for imgfile in batch_img_input:
+                    batch_color.append(Image.open(imgfile))
+            else:
+                batch_many_to_many = True # Well, one-to-many in this case, really.
+                batch_color = [None] # Note: For color batching, we will treat None as "no override"; it will not prevent a traditional img2img input.
+            
+            if batch_depth_input:
+                batch_depth_input.sort(key = lambda file : file.name)
+                for imgfile in batch_depth_input:
+                    batch_depth.append(Image.open(imgfile))
+            else:
+                batch_many_to_many = True # One-to-many
+                batch_depth = [input_depth_img]
+            
+            processed_output = None
+            
+            def batch_item(depth_img, color_img):
+                if color_img:
+                    # override input images
+                    p.init_images = [color_img] * max(len(p.init_images), 1)
+                return self.run_inner(p, depth_image, show_depth)
+            
+            for i, depth_image in enumerate(batch_depth):
+                if batch_many_to_many:
+                    for color_image in batch_color:
+                        processed_output = concat_processed_outputs(processed_output, batch_item(depth_image, color_image))
+                else:
+                    processed_output = concat_processed_outputs(processed_output, batch_item(depth_image, batch_color[i]))
+                    
+        finally:
+            cleanup_temp_files(batch_img_input)
+            cleanup_temp_files(batch_depth_input)
+        
         return processed_output
