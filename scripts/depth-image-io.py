@@ -199,6 +199,12 @@ class Script(scripts.Script):
             
             processed_output = None
             
+            if batch_many_to_many:
+                num_outputs = len(batch_color) * len(batch_depth)
+            else:
+                num_outputs = max(len(batch_color), len(batch_depth))
+            shared.state.job_count = num_outputs * p.n_iter
+            
             def batch_item(depth_img, color_img):
                 if color_img:
                     # override input images
